@@ -62,15 +62,33 @@
             // 2. Gemini API 호출 (Vercel 환경변수 사용 권장하나, 테스트용으로 입력 폼 추가 가능)
             const handleAnalyze = async () => {
                 setIsLoading(true);
-                // Vercel 배포 시 'Settings > Environment Variables'에 넣은 키를 가져옵니다.
-                // 로컬 테스트용으로는 직접 넣어도 되지만 공유 시엔 주의!
-                const apiKey = window.env?.VITE_GEMINI_API_KEY || ""; 
 
-                if (!apiKey) {
-                        setFinalReport("에러: API 키가 설정되지 않았습니다. Vercel 환경 변수를 확인하세요.");
-                        setIsLoading(false);
-                        return;
+                try {
+                    const resp = await fetch("/api/generate", {
+                        method: "POST",
+                        headers: {
+                            "Content-Type": "application/json"
+                        },
+                        body: JSON.stringify({
+                            extracted,
+                            commentary
+                        })
+                    });
+
+                    const res = await resp.json();
+
+                    if (res.error) {
+                        setFinalReport("에러: " + res.error);
+                    } else {
+                        setFinalReport(res.text);
+                    }
+
+                } catch (err) {
+                    setFinalReport("서버 요청 실패");
+                } finally {
+                    setIsLoading(false);
                 }
+            };
 
                 const prompt = `수면 전문가로서 다음 데이터를 분석해 리포트 양식으로 작성해줘. 데이터: ${JSON.stringify(extracted)}, 코멘트: ${commentary}`;
 
