@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sleep Report Analyzer V1.0</title>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+</head>
+<body class="bg-slate-50 min-h-screen">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useMemo } = React;
+
+        // PDF.js 워커 설정
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+        function App() {
+            const [extracted, setExtracted] = useState(null);
+            const [commentary, setCommentary] = useState("");
+            const [finalReport, setFinalReport] = useState("");
+            const [isLoading, setIsLoading] = useState(false);
+            const [fileName, setFileName] = useState("");
+
+            // 1. PDF 텍스트 추출 로직
+            const handleFileUpload = async (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+                setIsLoading(true);
+                setFileName(file.name);
+
+                try {
+                    const arrayBuffer = await file.arrayBuffer();
+                    const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+                    let fullText = "";
+                    for (let i = 1; i <= pdf.numPages; i++) {
+                        const page = await pdf.getPage(i);
+                        const textContent = await page.getTextContent();
+                        fullText += textContent.items.map(item => item.str).join(" ") + "\n";
+                    }
+                    
+                    // 정규표현식 파싱 (교수님 로직 탑재)
+                    const nameMatch = fullText.match(/([가-힣]{2,4})\s*님?/) || fullText.match(/(?:Name|이름)[^\n:]*[:\s]*([가-힣a-zA-Z\s]{2,10})/);
+                    const effMatch = fullText.match(/(?:Sleep Efficiency|수면 효율)[^\n\d-]*(-?\d+(?:\.\d+)?)\s*%/i);
+                    
+                    setExtracted({
+                        name: nameMatch ? nameMatch[1].trim() : "미입력",
+                        efficiency: effMatch ? effMatch[1] + "%" : "미추출",
+                        rawText: fullText.substring(0, 500) + "..." // 샘플 확인용
+                    });
+                } catch (err) {
+                    alert("PDF 읽기 실패: " + err.message);
+                } finally {
+                    setIsLoading(false);
+                }
+            };
+
+            // 2. Gemini API 호출 (Vercel 환경변수 사용 권장하나, 테스트용으로 입력 폼 추가 가능)
+            const handleAnalyze = async () => {
+                setIsLoading(true);
+                // Vercel 배포 시 'Settings > Environment Variables'에 넣은 키를 가져옵니다.
+                // 로컬 테스트용으로는 직접 넣어도 되지만 공유 시엔 주의!
+                const apiKey = window.env?.VITE_GEMINI_API_KEY || ""; 
+
+                if (!apiKey) {
+                        setFinalReport("에러: API 키가 설정되지 않았습니다. Vercel 환경 변수를 확인하세요.");
+                        setIsLoading(false);
+                        return;
+                }
+
+                const prompt = `수면 전문가로서 다음 데이터를 분석해 리포트 양식으로 작성해줘. 데이터: ${JSON.stringify(extracted)}, 코멘트: ${commentary}`;
+
+
+                try {
+                    const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key=${apiKey}`, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
+                    });
+                    const res = await resp.json();
+                    setFinalReport(res.candidates[0].content.parts[0].text);
+                } catch (err) {
+                    setFinalReport("에러 발생: API 키를 확인하거나 나중에 다시 시도하세요.");
+                } finally {
+                    setIsLoading(false);
+                }
+            };
+
+            return (
+                <div className="max-w-4xl mx-auto p-8 space-y-8">
+                    <header className="text-center space-y-2">
+                        <h1 className="text-4xl font-extrabold text-slate-900 tracking-tight">Sleep Analyzer 🌙</h1>
+                        <p className="text-slate-500 font-medium text-lg">동료 교수님을 위한 초간편 수면 리포트 분석기</p>
+                    </header>
+
+                    <div className="bg-white rounded-3xl shadow-xl p-8 space-y-6 border border-slate-100">
+                        <div className="space-y-4">
+                            <label className="block text-sm font-bold text-slate-700">1. 수면 리포트 PDF 업로드</label>
+                            <input type="file" accept=".pdf" onChange={handleFileUpload} 
+                                   class="block w-full text-sm text-slate-500 file:mr-4 file:py-3 file:px-6 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-sky-50 file:text-sky-700 hover:file:bg-sky-100 transition-all cursor-pointer"/>
+                            {fileName && <p className="text-sky-600 text-sm font-medium">✅ 선택된 파일: {fileName}</p>}
+                        </div>
+
+                        <div className="space-y-4">
+                            <label className="block text-sm font-bold text-slate-700">2. 분석 코멘트</label>
+                            <textarea className="w-full h-32 p-4 rounded-2xl border border-slate-200 focus:ring-2 focus:ring-sky-500 outline-none transition"
+                                      placeholder="강조하고 싶은 내용을 적어주세요." value={commentary} onChange={(e)=>setCommentary(e.target.value)} />
+                        </div>
+
+                        <button onClick={handleAnalyze} disabled={isLoading || !extracted}
+                                className="w-full bg-slate-900 text-white py-4 rounded-2xl font-bold hover:bg-slate-800 disabled:bg-slate-300 transition-all shadow-lg text-lg">
+                            {isLoading ? "데이터 분석 중..." : "AI 분석 리포트 생성 시작"}
+                        </button>
+                    </div>
+
+                    {finalReport && (
+                        <div className="bg-emerald-50 rounded-3xl p-8 border border-emerald-100 shadow-inner">
+                            <h2 className="text-xl font-bold text-emerald-900 mb-4">분석 결과 리포트</h2>
+                            <pre className="whitespace-pre-wrap text-emerald-800 leading-relaxed font-sans text-md">{finalReport}</pre>
+                            <button onClick={()=>navigator.clipboard.writeText(finalReport)} 
+                                    className="mt-6 w-full bg-emerald-600 text-white py-3 rounded-xl font-bold hover:bg-emerald-700 transition">결과 복사하기</button>
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
